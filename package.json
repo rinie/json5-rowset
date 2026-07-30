@@ -1,0 +1,14 @@
+{
+  "name": "json5-rowset",
+  "version": "0.1.0",
+  "description": "Compact header/data JSON5 rowset notation, with converters for node-oracledb's array/object row formats",
+  "main": "json5-rowset.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "json5": "^2.2.3"
+  }
+}
