@@ -7,7 +7,7 @@
   "scripts": {
     "test": "node test.js"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "dependencies": {
     "json5": "^2.2.3"
   }
