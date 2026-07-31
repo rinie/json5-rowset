@@ -10,6 +10,7 @@ const {
   parseRowsetTables,
   parseRowsetNested,
   parseRowsetGrouped,
+  parseRowsetGroupedEntries,
   stringifyRowset,
   stringifyRowsetTables,
   stringifyRowsetNested,
@@ -232,6 +233,39 @@ console.log('parseRowsetGrouped with metaData-shaped header OK');
 // a data entry for a name with no header yet is rejected
 assert.throws(() => parseRowsetGrouped(`{ x: { data: [[1]] } }`), /before its header/);
 console.log('parseRowsetGrouped rejects data before header OK');
+
+// 11a2. parseRowsetGroupedEntries: same text, but every entry kept separate,
+// in document order, with header resolved/carried-forward on every entry -
+// e.g. to drive Oracle executeMany()/execute() calls in the order the
+// groups were written (header rows before their lines, for FK ordering)
+const groupedEntries = parseRowsetGroupedEntries(groupedText);
+assert.strictEqual(groupedEntries.length, 4);
+assert.deepStrictEqual(groupedEntries.map((e) => e.name), ['orderHeader', 'orderLines', 'orderHeader', 'orderLines']);
+assert.deepStrictEqual(groupedEntries[2].header, groupedEntries[0].header); // carried forward, no header block for order 2
+assert.deepStrictEqual(groupedEntries[2].data, [[2, 'Globex', '2026-07-15']]);
+console.log('parseRowsetGroupedEntries OK: preserves document order and carries headers forward');
+
+// simulate driving Oracle inserts from parseRowsetGroupedEntries: executeMany
+// for entries with more than one row, plain execute (bind by position) for a
+// single row, processed strictly in document order
+const execLog = [];
+const fakeConnection = {
+  execute: (sql, bindsByPosition) => execLog.push(['execute', sql, bindsByPosition]),
+  executeMany: (sql, rows) => execLog.push(['executeMany', sql, rows]),
+};
+const statements = {
+  orderHeader: 'insert into order_header values (:1, :2, :3)',
+  orderLines: 'insert into order_lines values (:1, :2, :3, :4)',
+};
+parseRowsetGroupedEntries(groupedText).forEach(({ name, data }) => {
+  const sql = statements[name];
+  if (data.length > 1) fakeConnection.executeMany(sql, data);
+  else fakeConnection.execute(sql, data[0]);
+});
+assert.deepStrictEqual(execLog.map((c) => c[0]), ['execute', 'executeMany', 'execute', 'execute']);
+assert.deepStrictEqual(execLog[0][2], [1, 'Acme', '2026-07-01']); // single-row entry: bind by position, one array
+assert.deepStrictEqual(execLog[1][2], [[1, 1, 'WIDGET-1', 3], [1, 2, 'WIDGET-2', 1]]); // multi-row: executeMany
+console.log('parseRowsetGroupedEntries -> execute/executeMany dispatch, in order, OK');
 
 // 11b. stringifyRowsetGrouped without opts.groups: one full {header,data} entry per table
 const groupedBackText = stringifyRowsetGrouped(groupedTables);

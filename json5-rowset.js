@@ -276,27 +276,54 @@ function scanJson5TopLevelEntries(text) {
 //     orderHeader: { data: [[2, 'Globex']] },
 //     orderLines: { data: [[2, 'GADGET-9', 5]] },
 //   }
-//   -> { orderHeader: {header, data}, orderLines: {header, data} }
+//   -> [
+//        { name: 'orderHeader', header: ['orderId', 'customer'], data: [[1, 'Acme']] },
+//        { name: 'orderLines', header: [...], data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
+//        { name: 'orderHeader', header: ['orderId', 'customer'], data: [[2, 'Globex']] },
+//        { name: 'orderLines', header: [...], data: [[2, 'GADGET-9', 5]] },
+//      ]
+// Unlike parseRowsetGrouped (which merges same-name entries into one
+// table), this keeps every entry separate, in document order, with its
+// header resolved even when the entry itself only supplied data - e.g.
+// to walk order header/lines pairs in the order they were written and
+// insert each into Oracle as its own executeMany()/execute() call
+// (header rows before their lines, for FK ordering), without first
+// merging everything into one giant per-table batch.
 // header can be anything parseRowset/parseRowsetNested accept there too
 // - plain column names or Oracle metaData-shaped objects - it's never
 // guessed at by shape, only ever read from an explicit `header` key.
-function parseRowsetGrouped(text) {
-  const entries = scanJson5TopLevelEntries(text);
-  const tables = {};
-  entries.forEach(({ key: name, value: entry }, i) => {
+function parseRowsetGroupedEntries(text) {
+  const scanned = scanJson5TopLevelEntries(text);
+  const headers = {};
+  return scanned.map(({ key: name, value: entry }, i) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       throw new Error(`Invalid json5-rowset grouped notation: "${name}" entry ${i} must be an object of { header?, data? }`);
     }
-    if (!tables[name]) tables[name] = { header: null, data: [] };
     if (Object.prototype.hasOwnProperty.call(entry, 'header')) {
-      tables[name].header = entry.header;
+      headers[name] = entry.header;
     }
-    if (Object.prototype.hasOwnProperty.call(entry, 'data')) {
-      if (!tables[name].header) {
-        throw new Error(`Invalid json5-rowset grouped notation: "${name}" data in entry ${i} appears before its header`);
-      }
-      tables[name].data.push(...entry.data);
+    if (!Object.prototype.hasOwnProperty.call(entry, 'data')) {
+      throw new Error(`Invalid json5-rowset grouped notation: "${name}" entry ${i} is missing "data"`);
     }
+    if (!headers[name]) {
+      throw new Error(`Invalid json5-rowset grouped notation: "${name}" data in entry ${i} appears before its header`);
+    }
+    return { name, header: headers[name], data: entry.data };
+  });
+}
+
+// Same { name: {header, data} } shape parseRowsetTables/parseRowsetNested
+// return - parseRowsetGroupedEntries's entries merged by name, data from
+// every entry sharing a name concatenated in document order. Use this
+// when you just want the final per-table rowsets and don't care about
+// original block order; use parseRowsetGroupedEntries when you do (e.g.
+// driving Oracle inserts in the order the groups were written).
+function parseRowsetGrouped(text) {
+  const tables = {};
+  parseRowsetGroupedEntries(text).forEach(({ name, header, data }) => {
+    if (!tables[name]) tables[name] = { header, data: [] };
+    tables[name].header = header;
+    tables[name].data.push(...data);
   });
   return tables;
 }
@@ -458,6 +485,7 @@ module.exports = {
   parseRowsetTables,
   parseRowsetNested,
   parseRowsetGrouped,
+  parseRowsetGroupedEntries,
   stringifyRowset,
   stringifyRowsetTables,
   stringifyRowsetNested,

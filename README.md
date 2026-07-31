@@ -167,6 +167,14 @@ appended instead of overwritten.
 - `parseRowsetGrouped(text)` → `{ orderHeader: {header, data}, orderLines: {header, data} }`
   — same shape `parseRowsetTables`/`parseRowsetNested` return; data from
   every entry sharing a name is concatenated, in document order.
+- `parseRowsetGroupedEntries(text)` → the same text, but every entry kept
+  *separate* and in document order, instead of merged by name:
+  `[{ name, header, data }, ...]`, one array element per block in the
+  source text, each with its header resolved (carried forward from the
+  most recent occurrence for that name, even if that particular entry
+  only supplied `data`). `parseRowsetGrouped(text)` is just this,
+  merged. Use the entries form when block order itself matters — see
+  below.
 - `stringifyRowsetGrouped(tables, opts?)` → the inverse. Without
   `opts.groups` it emits exactly one `name: { header, data }` entry per
   table (its header plus all of its data) — always valid, just not
@@ -178,6 +186,48 @@ appended instead of overwritten.
   consumed off each table's data in order, each as its own `name: {...}`
   entry; the first entry for a given name also carries its `header`,
   later ones don't.
+
+#### Oracle: loading a grouped rowset in document order
+
+Master/detail data usually has to be inserted in order — order header
+rows before their lines, for FK ordering — which rules out just merging
+everything into two big batches and firing them off in any order.
+`parseRowsetGroupedEntries` preserves that order, so entries can be
+walked straight into node-oracledb calls, using `executeMany()` for an
+entry with more than one row and a plain `execute()` (bind by position)
+for a single row:
+
+```js
+const { parseRowsetGroupedEntries } = require('json5-rowset');
+
+const statements = {
+  orderHeader: 'insert into order_header values (:1, :2, :3)',
+  orderLines: 'insert into order_lines values (:1, :2, :3, :4)',
+};
+
+async function loadGroupedRowset(connection, text) {
+  const entries = parseRowsetGroupedEntries(text);
+  for (const { name, data } of entries) {
+    const sql = statements[name];
+    if (data.length > 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await connection.executeMany(sql, data); // data is already array-of-arrays: bind by position
+    } else {
+      // eslint-disable-next-line no-await-in-loop
+      await connection.execute(sql, data[0]); // single row: bind by position, one array
+    }
+  }
+  await connection.commit();
+}
+```
+
+This isn't a single round trip to Oracle (`executeMany`/`execute` are
+each their own round trip, batched internally) — a genuine single round
+trip for both tables together would need one PL/SQL procedure taking two
+collections as parameters, called once via `execute()` with array binds,
+which is a different mechanism entirely. This is the "N round trips,
+each fully batched, in the right order" middle ground, which is enough
+for most master/detail loads.
 
 ### Plain JSON
 
