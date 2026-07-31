@@ -129,14 +129,28 @@ case where nothing repeats.
 {
   orderHeader: {
     header: ['orderId', 'customer', 'orderDate'],
-    data: [[1, 'Acme', '2026-07-01']],
+    data: [
+      [1, 'Acme', '2026-07-01'],
+    ],
   },
   orderLines: {
     header: ['orderId', 'lineNo', 'sku', 'qty'],
-    data: [[1, 1, 'WIDGET-1', 3], [1, 2, 'WIDGET-2', 1]],
+    data: [
+      [1, 1, 'WIDGET-1', 3],
+      [1, 2, 'WIDGET-2', 1],
+    ],
   },
-  orderHeader: { data: [[2, 'Globex', '2026-07-15']] },   // no header redeclared
-  orderLines: { data: [[2, 1, 'GADGET-9', 5]] },
+  orderHeader: {
+    // no header redeclared
+    data: [
+      [2, 'Globex', '2026-07-15'],
+    ],
+  },
+  orderLines: {
+    data: [
+      [2, 1, 'GADGET-9', 5],
+    ],
+  },
 }
 ```
 
