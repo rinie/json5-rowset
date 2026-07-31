@@ -58,12 +58,16 @@ it.
    JSON5 over a shorter-but-indirected encoding. If someone asks for this
    later, it's a deliberate reversal of a decision, not an oversight.
 
-4. **Two multi-table shapes exist on purpose, not by indecision:** flat
-   prefixed keys (`csvHeader`/`csvData`) and nested blocks
-   (`penguins: {header, data}`). Both round-trip through the same
-   in-memory `{name: {header, data}}` object. Keep both — the nested
-   form was the one actually preferred once seen side-by-side, but the
-   flat form isn't dead code, don't remove it without asking.
+4. **Three multi-table shapes exist on purpose, not by indecision:** flat
+   prefixed keys (`csvHeader`/`csvData`), nested blocks
+   (`penguins: {header, data}`), and grouped/interleaved blocks
+   (`groups: [{name, header}, {name, data}, ...]`). All three round-trip
+   through the same in-memory `{name: {header, data}}` object. Keep all
+   three — nested is preferred for hand-authoring a small fixed set of
+   tables, grouped exists specifically for master/detail data (order
+   header + lines, repeated once per order) where a table's header
+   should only need to be written once, anywhere before its first data
+   block, not for every repetition. Don't remove any without asking.
 
 5. **`stringifyRowset*` always single-quotes string values.** Known gap:
    Oracle `NUMBER` columns fetched as strings (`fetchAsString`, or values
@@ -74,7 +78,8 @@ it.
 
 6. **Naming convention across the API:** every function is named
    `<verb><Shape>`, where shape is `Rowset` (single table) or
-   `RowsetTables`/`RowsetNested` (multi-table, flat vs nested). No
+   `RowsetTables`/`RowsetNested`/`RowsetGrouped` (multi-table: flat,
+   nested, or grouped/interleaved). No
    remaining references to the old `hd5`/`Hd5` working name should exist
    in code, comments, or docs — if you spot one, it's a miss from the
    rename, fix it.

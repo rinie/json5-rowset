@@ -9,9 +9,11 @@ const {
   parseRowset,
   parseRowsetTables,
   parseRowsetNested,
+  parseRowsetGrouped,
   stringifyRowset,
   stringifyRowsetTables,
   stringifyRowsetNested,
+  stringifyRowsetGrouped,
   rowsetToJson,
   objectsToJson,
 } = require('./json5-rowset.js');
@@ -170,5 +172,58 @@ const nestedBackText = stringifyRowsetNested(nestedTables);
 console.log('stringifyRowsetNested:\n', nestedBackText);
 assert.deepStrictEqual(parseRowsetNested(nestedBackText), nestedTables);
 console.log('round trip nested json5-rowset text OK');
+
+// 11. grouped multi-table shape: interleaved master/detail blocks, header
+// declared once per table, later blocks for the same table are data-only
+const groupedText = `{
+  groups: [
+    { name: 'orderHeader', header: ['orderId', 'customer'] },
+    { name: 'orderLines', header: ['orderId', 'sku', 'qty'] },
+    { name: 'orderHeader', data: [[1, 'Acme']] },
+    { name: 'orderLines', data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
+    { name: 'orderHeader', data: [[2, 'Globex']] }, // no header redeclared
+    { name: 'orderLines', data: [[2, 'GADGET-9', 5]] },
+  ],
+}`;
+const groupedTables = parseRowsetGrouped(groupedText);
+assert.deepStrictEqual(Object.keys(groupedTables).sort(), ['orderHeader', 'orderLines']);
+assert.deepStrictEqual(groupedTables.orderHeader, {
+  header: ['orderId', 'customer'],
+  data: [[1, 'Acme'], [2, 'Globex']],
+});
+assert.deepStrictEqual(groupedTables.orderLines, {
+  header: ['orderId', 'sku', 'qty'],
+  data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1], [2, 'GADGET-9', 5]],
+});
+console.log('parseRowsetGrouped OK:', Object.keys(groupedTables));
+
+// a data block for a name with no header yet is rejected
+assert.throws(() => parseRowsetGrouped(`{ groups: [{ name: 'x', data: [[1]] }] }`), /before its header/);
+console.log('parseRowsetGrouped rejects data before header OK');
+
+// 11b. stringifyRowsetGrouped without opts.groups: header once + one combined data block per table
+const groupedBackText = stringifyRowsetGrouped(groupedTables);
+console.log('stringifyRowsetGrouped (ungrouped):\n', groupedBackText);
+assert.deepStrictEqual(parseRowsetGrouped(groupedBackText), groupedTables);
+console.log('round trip grouped (ungrouped) json5-rowset text OK');
+
+// 11c. stringifyRowsetGrouped with opts.groups: reproduces the original master/detail interleaving
+const groupedInterleavedText = stringifyRowsetGrouped(groupedTables, {
+  groups: [
+    { orderHeader: 1, orderLines: 2 },
+    { orderHeader: 1, orderLines: 1 },
+  ],
+});
+console.log('stringifyRowsetGrouped (interleaved):\n', groupedInterleavedText);
+assert.deepStrictEqual(parseRowsetGrouped(groupedInterleavedText), groupedTables);
+console.log('round trip grouped (interleaved) json5-rowset text OK');
+
+// 11d. opts.headersAtTop: all headers emitted before any data, still round trips
+const groupedHeadersAtTopText = stringifyRowsetGrouped(groupedTables, {
+  groups: [{ orderHeader: 1, orderLines: 2 }, { orderHeader: 1, orderLines: 1 }],
+  headersAtTop: true,
+});
+assert.deepStrictEqual(parseRowsetGrouped(groupedHeadersAtTopText), groupedTables);
+console.log('round trip grouped (interleaved, headersAtTop) json5-rowset text OK');
 
 console.log('\nAll checks passed.');

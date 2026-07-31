@@ -114,6 +114,43 @@ Two interchangeable shapes for holding several tables in one file:
 - `parseRowsetNested(text)` → `{ penguins: {header, data}, weather: {header, data} }`
 - `stringifyRowsetNested(tables, opts?)` → the inverse
 
+### json5-rowset text (grouped / interleaved tables)
+
+For master/detail data — an order header plus its lines, repeated once
+per order — repeating the column names for every order is pure noise.
+The grouped shape is an ordered sequence of small `{name, header}` /
+`{name, data}` blocks: each table's header only has to appear once,
+anywhere before its first data block, then every later data block for
+that name just carries rows. Declaring every header up front (before any
+data) works too — it's just the case where every header happens to come
+first.
+
+```js
+{
+  groups: [
+    { name: 'orderHeader', header: ['orderId', 'customer'] },
+    { name: 'orderLines', header: ['orderId', 'sku', 'qty'] },
+    { name: 'orderHeader', data: [[1, 'Acme']] },
+    { name: 'orderLines', data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
+    { name: 'orderHeader', data: [[2, 'Globex']] },       // no header redeclared
+    { name: 'orderLines', data: [[2, 'GADGET-9', 5]] },
+  ],
+}
+```
+
+- `parseRowsetGrouped(text, opts?)` → `{ orderHeader: {header, data}, orderLines: {header, data} }`
+  — same shape `parseRowsetTables`/`parseRowsetNested` return; data from
+  every block sharing a name is concatenated, in document order.
+  `opts.groupsKey` renames the top-level `groups` property.
+- `stringifyRowsetGrouped(tables, opts?)` → the inverse. Without
+  `opts.groups` it just emits each table's header once followed by all
+  its data as one block (always valid, not grouped). To reproduce a real
+  interleaving, pass `opts.groups` as an array of per-group row counts:
+  `[{ orderHeader: 1, orderLines: 2 }, { orderHeader: 1, orderLines: 1 }]`
+  for two orders, the first with 2 lines and the second with 1 — rows are
+  consumed off each table's data in order. `opts.headersAtTop: true`
+  emits every header before any data instead of right before first use.
+
 ### Plain JSON
 
 - `rowsetToJson(rowset)` — `JSON.stringify({header, data})`, smallest
@@ -121,8 +158,9 @@ Two interchangeable shapes for holding several tables in one file:
 - `objectsToJson(rowset)` — `JSON.stringify(rowsetToObjects(rowset))`,
   expanded array-of-objects.
 
-Nested/flat multi-table objects (from `parseRowsetTables`/`parseRowsetNested`)
-are already plain JS objects of `{header, data}` — `JSON.stringify(tables)`
+Nested/flat/grouped multi-table objects (from `parseRowsetTables`/
+`parseRowsetNested`/`parseRowsetGrouped`) are already plain JS objects of
+`{header, data}` — `JSON.stringify(tables)`
 works directly with no extra step, and running `rowsetToObjects` per
 table first gives the expanded array-of-objects form per table.
 
@@ -133,7 +171,7 @@ npm test
 ```
 
 `test.js` round-trips every function above (parse ↔ stringify, both
-Oracle result shapes converging on the same rowset, both multi-table
+Oracle result shapes converging on the same rowset, all three multi-table
 shapes, and the plain-JSON conversions) with `assert.deepStrictEqual`
 checks — read it as the spec if anything above is ambiguous.
 
