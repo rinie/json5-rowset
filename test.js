@@ -173,39 +173,67 @@ console.log('stringifyRowsetNested:\n', nestedBackText);
 assert.deepStrictEqual(parseRowsetNested(nestedBackText), nestedTables);
 console.log('round trip nested json5-rowset text OK');
 
-// 11. grouped multi-table shape: interleaved master/detail blocks, table
-// name is the key, header declared once per table (here up front, in one
-// shared block), each later block is data-only and doubles as one whole
-// group (order header row + its lines together)
+// 11. grouped multi-table shape: same per-table {header, data} shape as
+// parseRowsetNested, except a table name can repeat - a later occurrence
+// carries only `data`, appended to what's already there. The table name
+// is scanned by hand (not via JSON5.parse), since plain JS/JSON5 object
+// semantics would silently drop the first orderHeader entry entirely
+// (last duplicate key wins).
 const groupedText = `{
-  groups: [
-    { orderHeader: ['orderId', 'customer'], orderLines: ['orderId', 'sku', 'qty'] },
-    { orderHeader: [[1, 'Acme']], orderLines: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
-    { orderHeader: [[2, 'Globex']], orderLines: [[2, 'GADGET-9', 5]] }, // no header redeclared
-  ],
+  // order 1
+  orderHeader: {
+    header: ['orderId', 'customer', 'orderDate'],
+    data: [
+      [1, 'Acme', '2026-07-01'],
+    ],
+  },
+  orderLines: {
+    header: ['orderId', 'lineNo', 'sku', 'qty'],
+    data: [
+      [1, 1, 'WIDGET-1', 3],
+      [1, 2, 'WIDGET-2', 1],
+    ],
+  },
+  // order 2: no header redeclared
+  orderHeader: {
+    data: [
+      [2, 'Globex', '2026-07-15'],
+    ],
+  },
+  orderLines: {
+    data: [
+      [2, 1, 'GADGET-9', 5],
+    ],
+  },
 }`;
 const groupedTables = parseRowsetGrouped(groupedText);
 assert.deepStrictEqual(Object.keys(groupedTables).sort(), ['orderHeader', 'orderLines']);
 assert.deepStrictEqual(groupedTables.orderHeader, {
-  header: ['orderId', 'customer'],
-  data: [[1, 'Acme'], [2, 'Globex']],
+  header: ['orderId', 'customer', 'orderDate'],
+  data: [[1, 'Acme', '2026-07-01'], [2, 'Globex', '2026-07-15']],
 });
 assert.deepStrictEqual(groupedTables.orderLines, {
-  header: ['orderId', 'sku', 'qty'],
-  data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1], [2, 'GADGET-9', 5]],
+  header: ['orderId', 'lineNo', 'sku', 'qty'],
+  data: [[1, 1, 'WIDGET-1', 3], [1, 2, 'WIDGET-2', 1], [2, 1, 'GADGET-9', 5]],
 });
 console.log('parseRowsetGrouped OK:', Object.keys(groupedTables));
 
+// header can be metaData-shaped objects too, same as parseRowset/parseRowsetNested
+const metaGroupedText = `{
+  orderHeader: {
+    header: [{ name: 'orderId', dbTypeName: 'NUMBER' }, { name: 'customer', dbTypeName: 'VARCHAR2' }],
+    data: [[1, 'Acme']],
+  },
+}`;
+const metaGroupedTables = parseRowsetGrouped(metaGroupedText);
+assert.strictEqual(metaGroupedTables.orderHeader.header[0].dbTypeName, 'NUMBER');
+console.log('parseRowsetGrouped with metaData-shaped header OK');
+
 // a data entry for a name with no header yet is rejected
-assert.throws(() => parseRowsetGrouped(`{ groups: [{ x: [[1]] }] }`), /before its header/);
+assert.throws(() => parseRowsetGrouped(`{ x: { data: [[1]] } }`), /before its header/);
 console.log('parseRowsetGrouped rejects data before header OK');
 
-// an empty array is treated as an empty data entry, not a header
-const emptyDataTables = parseRowsetGrouped(`{ groups: [{ x: ['a'] }, { x: [] }] }`);
-assert.deepStrictEqual(emptyDataTables.x, { header: ['a'], data: [] });
-console.log('parseRowsetGrouped treats empty array as empty data OK');
-
-// 11b. stringifyRowsetGrouped without opts.groups: header once + one combined data block per table
+// 11b. stringifyRowsetGrouped without opts.groups: one full {header,data} entry per table
 const groupedBackText = stringifyRowsetGrouped(groupedTables);
 console.log('stringifyRowsetGrouped (ungrouped):\n', groupedBackText);
 assert.deepStrictEqual(parseRowsetGrouped(groupedBackText), groupedTables);
@@ -221,13 +249,5 @@ const groupedInterleavedText = stringifyRowsetGrouped(groupedTables, {
 console.log('stringifyRowsetGrouped (interleaved):\n', groupedInterleavedText);
 assert.deepStrictEqual(parseRowsetGrouped(groupedInterleavedText), groupedTables);
 console.log('round trip grouped (interleaved) json5-rowset text OK');
-
-// 11d. opts.headersAtTop: all headers emitted before any data, still round trips
-const groupedHeadersAtTopText = stringifyRowsetGrouped(groupedTables, {
-  groups: [{ orderHeader: 1, orderLines: 2 }, { orderHeader: 1, orderLines: 1 }],
-  headersAtTop: true,
-});
-assert.deepStrictEqual(parseRowsetGrouped(groupedHeadersAtTopText), groupedTables);
-console.log('round trip grouped (interleaved, headersAtTop) json5-rowset text OK');
 
 console.log('\nAll checks passed.');

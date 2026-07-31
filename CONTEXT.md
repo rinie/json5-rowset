@@ -60,16 +60,31 @@ it.
 
 4. **Three multi-table shapes exist on purpose, not by indecision:** flat
    prefixed keys (`csvHeader`/`csvData`), nested blocks
-   (`penguins: {header, data}`), and grouped/interleaved blocks
-   (`groups: [{name: header-or-data, ...}, ...]` — table name is the key,
-   header vs data told apart by shape, not a key name). All three
-   round-trip through the same in-memory `{name: {header, data}}` object.
-   Keep all three — nested is preferred for hand-authoring a small fixed
-   set of tables, grouped exists specifically for master/detail data
-   (order header + lines, repeated once per order) where a table's
-   header should only need to be written once, anywhere before its first
-   data entry, not for every repetition, and where one block can double
-   as one whole group. Don't remove any without asking.
+   (`penguins: {header, data}`), and grouped/interleaved blocks — the
+   same `{name: {header, data}}` shape as nested, except a table name may
+   repeat, with later occurrences carrying only `data` (nicknamed
+   "json-DRY": don't repeat the header). All three round-trip through the
+   same in-memory `{name: {header, data}}` object. Keep all three —
+   nested is preferred for hand-authoring a small fixed set of tables,
+   grouped exists specifically for master/detail data (order header +
+   lines, repeated once per order) where a table's header should only
+   need to be written once, not for every repetition. Don't remove any
+   without asking.
+
+   Grouped's duplicate-key requirement is *why* it can't just be
+   `JSON5.parse(text)` like every other parse function here - plain
+   JS/JSON5 object literal semantics silently drop earlier duplicate
+   keys (last one wins), which would lose data, not just reformat it.
+   `parseRowsetGrouped` hand-scans the top level only
+   (`scanJson5TopLevelEntries`, not exported) to preserve every
+   occurrence in order, then still hands each individual entry's value
+   off to `JSON5.parse` - nested syntax (strings, comments, trailing
+   commas, arrays/objects) is fully JSON5, not reimplemented. If this
+   scanner ever needs to grow (e.g. supporting the same duplicate-key
+   trick at a nested level), keep it hand-rolled rather than pulling in a
+   JSON5 tokenizer dependency - the `json5` package doesn't expose one
+   publicly, and the surface actually needed here (balanced brace/bracket
+   + string/comment skipping) is small on purpose.
 
 5. **`stringifyRowset*` always single-quotes string values.** Known gap:
    Oracle `NUMBER` columns fetched as strings (`fetchAsString`, or values

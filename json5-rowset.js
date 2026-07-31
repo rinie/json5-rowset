@@ -171,61 +171,132 @@ function parseRowsetNested(text) {
   return tables;
 }
 
-// One json5-rowset text: an ordered sequence of small blocks, each one a
-// plain object mapping table name -> header or data for that table. A
-// table's header only has to appear once, anywhere before its first data
-// entry; every later data entry for that name just carries rows and
-// reuses the header already seen. Declaring every table's header up
-// front (in one shared block, or one each) works too - it's just the
-// case where every header happens to come first. This is the shape for
-// hand-written master/detail exports (order header + lines, repeated
-// once per order) where re-typing the column names for every order would
-// be pure noise - and since one block can carry entries for several
-// tables at once, one block can double as one whole group (order header
-// row + its lines together).
-//
-// Header vs data is told apart by shape, not by a key name: a header's
-// entries are column names or metaData-shaped objects, never arrays; a
-// data entry is always an array of row arrays. An empty array is treated
-// as an empty data entry (zero-column headers aren't a real thing).
-//
-//   { groups: [
-//       { orderHeader: ['orderId', 'customer'], orderLines: ['orderId', 'sku', 'qty'] },
-//       { orderHeader: [[1, 'Acme']], orderLines: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
-//       { orderHeader: [[2, 'Globex']], orderLines: [[2, 'GADGET-9', 5]] },
-//     ] }
-//   -> { orderHeader: {header, data}, orderLines: {header, data} }
-// Same { name: {header, data} } shape parseRowsetTables/parseRowsetNested
-// return - data from every entry sharing a name is concatenated, in
-// document order.
-function parseRowsetGrouped(text, opts) {
-  const { groupsKey = 'groups' } = opts || {};
-  const parsed = JSON5.parse(text);
-  const blocks = parsed[groupsKey];
-  if (!Array.isArray(blocks)) {
-    throw new Error(`Invalid json5-rowset grouped notation: expected { ${groupsKey}: [...] }`);
-  }
-  const tables = {};
-  blocks.forEach((block, i) => {
-    if (!block || typeof block !== 'object' || Array.isArray(block)) {
-      throw new Error(`Invalid json5-rowset grouped notation: block ${i} must be an object of { name: header-or-data }`);
-    }
-    Object.keys(block).forEach((name) => {
-      const value = block[name];
-      if (!Array.isArray(value)) {
-        throw new Error(`Invalid json5-rowset grouped notation: "${name}" in block ${i} must be an array`);
-      }
-      if (!tables[name]) tables[name] = { header: null, data: [] };
-      const isHeader = value.length > 0 && !Array.isArray(value[0]);
-      if (isHeader) {
-        tables[name].header = value;
+// Scans a JSON5 object literal's top level into an ordered list of
+// { key, valueText } entries *without* collapsing duplicate keys the way
+// JSON5.parse (and plain JS object literals) would - last-key-wins is
+// exactly what parseRowsetGrouped needs to not do. Only the top level is
+// scanned by hand; each entry's value text is still handed to
+// JSON5.parse individually, so nested object/array/string/comment syntax
+// is fully JSON5, not reimplemented here.
+function scanJson5TopLevelEntries(text) {
+  let i = 0;
+  const n = text.length;
+  const skipWs = () => {
+    for (;;) {
+      const c = text[i];
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i += 1; } else if (c === '/' && text[i + 1] === '/') {
+        while (i < n && text[i] !== '\n') i += 1;
+      } else if (c === '/' && text[i + 1] === '*') {
+        i += 2;
+        while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1;
+        i += 2;
       } else {
-        if (!tables[name].header) {
-          throw new Error(`Invalid json5-rowset grouped notation: "${name}" data in block ${i} appears before its header`);
-        }
-        tables[name].data.push(...value);
+        break;
       }
-    });
+    }
+  };
+
+  skipWs();
+  if (text[i] !== '{') {
+    throw new Error('Invalid json5-rowset grouped notation: expected an object literal');
+  }
+  i += 1;
+
+  const entries = [];
+  for (;;) {
+    skipWs();
+    if (text[i] === '}') { i += 1; break; }
+
+    let key;
+    if (text[i] === '"' || text[i] === "'") {
+      const quote = text[i];
+      let j = i + 1;
+      while (j < n && text[j] !== quote) j += (text[j] === '\\' ? 2 : 1);
+      key = JSON5.parse(text.slice(i, j + 1));
+      i = j + 1;
+    } else {
+      let j = i;
+      while (j < n && /[A-Za-z0-9_$]/.test(text[j])) j += 1;
+      key = text.slice(i, j);
+      i = j;
+    }
+
+    skipWs();
+    if (text[i] !== ':') {
+      throw new Error(`Invalid json5-rowset grouped notation: expected ":" after key "${key}"`);
+    }
+    i += 1;
+    skipWs();
+
+    const valueStart = i;
+    let depth = 0;
+    let inStr = null;
+    while (i < n) {
+      const c = text[i];
+      if (inStr) {
+        i += (c === '\\' ? 2 : 1);
+        if (c === inStr) inStr = null;
+        continue;
+      }
+      if (c === '"' || c === "'") { inStr = c; i += 1; } else if (c === '/' && text[i + 1] === '/') {
+        while (i < n && text[i] !== '\n') i += 1;
+      } else if (c === '/' && text[i + 1] === '*') {
+        i += 2;
+        while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1;
+        i += 2;
+      } else if (c === '{' || c === '[') { depth += 1; i += 1; } else if (c === '}' || c === ']') {
+        if (depth === 0) break;
+        depth -= 1; i += 1;
+      } else if (c === ',' && depth === 0) {
+        break;
+      } else {
+        i += 1;
+      }
+    }
+
+    entries.push({ key, value: JSON5.parse(text.slice(valueStart, i).trim()) });
+    skipWs();
+    if (text[i] === ',') { i += 1; } else if (text[i] === '}') { i += 1; break; }
+  }
+  return entries;
+}
+
+// One json5-rowset text: the same per-table { header, data } shape
+// parseRowsetNested uses, except a table name may appear more than once
+// - a later occurrence just needs `data` (no `header`), and its rows are
+// appended to whatever that table's header/data already were. This is
+// the shape for hand-written master/detail exports (order header +
+// lines, repeated once per order) where re-typing the column names for
+// every order would be pure noise. Declaring every table's header up
+// front, each with its own single occurrence, works too - it's just the
+// degenerate case where nothing repeats.
+//   {
+//     orderHeader: { header: ['orderId', 'customer'], data: [[1, 'Acme']] },
+//     orderLines: { header: ['orderId', 'sku', 'qty'], data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
+//     orderHeader: { data: [[2, 'Globex']] },
+//     orderLines: { data: [[2, 'GADGET-9', 5]] },
+//   }
+//   -> { orderHeader: {header, data}, orderLines: {header, data} }
+// header can be anything parseRowset/parseRowsetNested accept there too
+// - plain column names or Oracle metaData-shaped objects - it's never
+// guessed at by shape, only ever read from an explicit `header` key.
+function parseRowsetGrouped(text) {
+  const entries = scanJson5TopLevelEntries(text);
+  const tables = {};
+  entries.forEach(({ key: name, value: entry }, i) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`Invalid json5-rowset grouped notation: "${name}" entry ${i} must be an object of { header?, data? }`);
+    }
+    if (!tables[name]) tables[name] = { header: null, data: [] };
+    if (Object.prototype.hasOwnProperty.call(entry, 'header')) {
+      tables[name].header = entry.header;
+    }
+    if (Object.prototype.hasOwnProperty.call(entry, 'data')) {
+      if (!tables[name].header) {
+        throw new Error(`Invalid json5-rowset grouped notation: "${name}" data in entry ${i} appears before its header`);
+      }
+      tables[name].data.push(...entry.data);
+    }
   });
   return tables;
 }
@@ -312,65 +383,55 @@ function stringifyRowsetNested(tables, opts) {
 //     [{ orderHeader: 1, orderLines: 2 }, { orderHeader: 1, orderLines: 1 }]
 //     for two orders, the first with 2 lines and the second with 1. Each
 //     table's rows are consumed off its data array in that order, and
-//     each group's row counts are emitted together as one block (so one
-//     block = one order: header row + its lines). A table's header is
-//     emitted (in its own block) right before its first data block,
-//     unless opts.headersAtTop is set, in which case every header is
-//     emitted together, up front, in one shared block instead.
+//     emitted as its own `name: { data: [...] }` entry - the first entry
+//     for a given name also carries its `header`, later ones don't (and
+//     the table name repeats, same as parseRowsetGrouped expects).
 //   Without opts.groups: no interleaving info to reconstruct, so every
-//     table's header is emitted, then all of its data as one block, in
-//     Object.keys(tables) order - always valid, just not grouped.
+//     table gets exactly one `name: { header, data }` entry (its header
+//     plus all of its data), in Object.keys(tables) order - always
+//     valid, just not grouped - the same output stringifyRowsetNested
+//     would produce.
 function stringifyRowsetGrouped(tables, opts) {
-  const {
-    groupsKey = 'groups', indent = '  ', groups, headersAtTop = false,
-  } = opts || {};
+  const { indent = '  ', groups } = opts || {};
   const idKey = (k) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k) ? k : toJsLiteral(k));
   const names = Object.keys(tables);
-  // Each block is a list of { name, header } / { name, data } entries -
-  // rendered as one object literal, so header and data for the same
-  // table must never land in the same block (duplicate key).
-  const blocks = [];
   const headerEmitted = {};
-  const emitHeaderBlock = (name) => {
-    if (headerEmitted[name]) return;
-    blocks.push([{ name, header: tables[name].header }]);
-    headerEmitted[name] = true;
-  };
+  const entries = []; // { name, header?, data }
 
-  if (headersAtTop) {
-    const entries = names.map((name) => {
+  const pushEntry = (name, data) => {
+    const entry = { name, data };
+    if (!headerEmitted[name]) {
+      entry.header = tables[name].header;
       headerEmitted[name] = true;
-      return { name, header: tables[name].header };
-    });
-    if (entries.length) blocks.push(entries);
-  }
+    }
+    entries.push(entry);
+  };
 
   if (groups) {
     const cursor = {};
     names.forEach((name) => { cursor[name] = 0; });
     groups.forEach((group) => {
-      const entries = [];
       Object.keys(group).forEach((name) => {
-        if (!headersAtTop) emitHeaderBlock(name);
         const count = group[name];
         const start = cursor[name];
-        entries.push({ name, data: tables[name].data.slice(start, start + count) });
+        pushEntry(name, tables[name].data.slice(start, start + count));
         cursor[name] = start + count;
       });
-      blocks.push(entries);
     });
   } else {
-    names.forEach((name) => {
-      emitHeaderBlock(name);
-      blocks.push([{ name, data: tables[name].data }]);
-    });
+    names.forEach((name) => pushEntry(name, tables[name].data));
   }
 
-  const renderEntry = (e) => (e.header
-    ? `${idKey(e.name)}: [${e.header.map(toJsLiteral).join(', ')}]`
-    : `${idKey(e.name)}: [${e.data.map((row) => `[${row.map(toJsLiteral).join(', ')}]`).join(', ')}]`);
-  const blockLines = blocks.map((entries) => `${indent}${indent}{ ${entries.map(renderEntry).join(', ')} },`);
-  return ['{', `${indent}${idKey(groupsKey)}: [`, ...blockLines, `${indent}],`, '}'].join('\n');
+  const lines = entries.map((e) => {
+    const inner = `${indent}${indent}`;
+    const body = [];
+    if (e.header) body.push(`${inner}header: [${e.header.map(toJsLiteral).join(', ')}],`);
+    body.push(`${inner}data: [`);
+    e.data.forEach((row) => body.push(`${inner}${indent}[${row.map(toJsLiteral).join(', ')}],`));
+    body.push(`${inner}],`);
+    return [`${indent}${idKey(e.name)}: {`, ...body, `${indent}},`].join('\n');
+  });
+  return ['{', ...lines, '}'].join('\n');
 }
 
 // hd -> plain JSON, keeping the compact {header, data} shape (smallest

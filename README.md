@@ -114,49 +114,56 @@ Two interchangeable shapes for holding several tables in one file:
 - `parseRowsetNested(text)` → `{ penguins: {header, data}, weather: {header, data} }`
 - `stringifyRowsetNested(tables, opts?)` → the inverse
 
-### json5-rowset text (grouped / interleaved tables)
+### json5-rowset text (grouped / interleaved tables — "json-DRY")
 
 For master/detail data — an order header plus its lines, repeated once
 per order — repeating the column names for every order is pure noise.
-The grouped shape is an ordered sequence of small blocks, each one a
-plain object keyed by table name (like the flat/nested shapes above),
-mapping to either that table's header or a chunk of its data. A table's
-header only has to appear once, anywhere before its first data entry;
-every later data entry for that name just carries rows. Declaring every
-header up front (in one shared block, or one each) works too — it's just
-the case where every header happens to come first. Since one block can
-carry entries for several tables at once, one block can double as one
-whole group — an order header row plus its lines, together:
+The grouped shape is the same per-table `{ header, data }` object
+`parseRowsetNested` uses, except a table name is allowed to repeat: a
+later occurrence only needs `data` (no `header`), and its rows are
+appended to that table. Declaring every table's header up front, each
+with its own single occurrence, works too — it's just the degenerate
+case where nothing repeats.
 
 ```js
 {
-  groups: [
-    { orderHeader: ['orderId', 'customer'], orderLines: ['orderId', 'sku', 'qty'] },
-    { orderHeader: [[1, 'Acme']], orderLines: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
-    { orderHeader: [[2, 'Globex']], orderLines: [[2, 'GADGET-9', 5]] }, // no header redeclared
-  ],
+  orderHeader: {
+    header: ['orderId', 'customer', 'orderDate'],
+    data: [[1, 'Acme', '2026-07-01']],
+  },
+  orderLines: {
+    header: ['orderId', 'lineNo', 'sku', 'qty'],
+    data: [[1, 1, 'WIDGET-1', 3], [1, 2, 'WIDGET-2', 1]],
+  },
+  orderHeader: { data: [[2, 'Globex', '2026-07-15']] },   // no header redeclared
+  orderLines: { data: [[2, 1, 'GADGET-9', 5]] },
 }
 ```
 
-Header vs data is told apart by shape, not by a key name: a header's
-entries are column names or metaData-shaped objects, never arrays; a
-data entry is always an array of row arrays. (An empty array is treated
-as an empty data entry — there's no such thing as a zero-column header.)
+`header` is never guessed at by shape — it's always read from an
+explicit `header` key, so it can be plain column names or Oracle
+metaData-shaped objects, same as everywhere else in this module. Plain
+JS/JSON5 object semantics don't allow this text to just be handed to
+`JSON5.parse` as-is, though — a normal object literal treats a repeated
+key as last-one-wins and would silently drop the first `orderHeader`
+entry. `parseRowsetGrouped` scans the top level itself (handing each
+individual entry's value off to `JSON5.parse`) so repeated keys are
+appended instead of overwritten.
 
-- `parseRowsetGrouped(text, opts?)` → `{ orderHeader: {header, data}, orderLines: {header, data} }`
+- `parseRowsetGrouped(text)` → `{ orderHeader: {header, data}, orderLines: {header, data} }`
   — same shape `parseRowsetTables`/`parseRowsetNested` return; data from
   every entry sharing a name is concatenated, in document order.
-  `opts.groupsKey` renames the top-level `groups` property.
 - `stringifyRowsetGrouped(tables, opts?)` → the inverse. Without
-  `opts.groups` it just emits each table's header once followed by all
-  its data as one block (always valid, not grouped). To reproduce a real
-  interleaving, pass `opts.groups` as an array of per-group row counts:
+  `opts.groups` it emits exactly one `name: { header, data }` entry per
+  table (its header plus all of its data) — always valid, just not
+  grouped, and the same output `stringifyRowsetNested` would produce. To
+  reproduce a real interleaving, pass `opts.groups` as an array of
+  per-group row counts:
   `[{ orderHeader: 1, orderLines: 2 }, { orderHeader: 1, orderLines: 1 }]`
   for two orders, the first with 2 lines and the second with 1 — rows are
-  consumed off each table's data in order, and each group's counts are
-  emitted together as one block (one block = one order). `opts.headersAtTop: true`
-  emits every header together, up front, in one shared block, instead of
-  each right before its first data block.
+  consumed off each table's data in order, each as its own `name: {...}`
+  entry; the first entry for a given name also carries its `header`,
+  later ones don't.
 
 ### Plain JSON
 
@@ -204,5 +211,9 @@ doing before this goes in a shared repo.
   column names per-value to select against. If that's needed for
   `OUT_FORMAT_ARRAY` too, it'd have to select by index against
   `result.metaData` first.
+- `parseRowsetGrouped` hand-scans only the *top* level of the object
+  literal to preserve duplicate table-name keys (see above); a table
+  name repeating inside a nested structure isn't a thing this format
+  has a use for, so that's not supported, and there's no plan to.
 - No CLI wrapper yet (e.g. `json5-rowset convert file.js --to json`) —
   every entry point above is a function, called from your own script.
