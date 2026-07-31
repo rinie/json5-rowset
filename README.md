@@ -54,6 +54,15 @@ npm install
   `header` (array of names, or of `{name, ...}` objects) is optional;
   defaults to the first row's key order.
 - `rowsetToObjects(rowset)` — `{header, data}` → array-of-objects.
+- `projectRowsetColumns(rowset, order)` — `{header, data}` → `{header, data}`,
+  with columns reordered/subset to `order` (an array of column names, or
+  of `{name, ...}` objects), looked up by name regardless of the source
+  column order. Throws if `order` names a column the source header
+  doesn't have. For bind-by-position calls into something whose parameter
+  order doesn't match your data — e.g. a stored procedure — keep one
+  small `order` array per procedure, separate from both the data and the
+  call site, instead of reshaping the data itself or switching to named
+  binds; see the Oracle recipe below.
 - `columnName(col)` — get the plain name whether `col` is a string or a
   `{name, ...}` object. Used internally, exported in case you're writing
   more converters against the same header shape.
@@ -198,8 +207,15 @@ entry with more than one row and a plain `execute()` (bind by position)
 for a single row:
 
 ```js
-const { parseRowsetGroupedEntries } = require('json5-rowset');
+const { parseRowsetGroupedEntries, projectRowsetColumns } = require('json5-rowset');
 
+// one small ordered list per procedure - if a proc's parameter order
+// changes in a future release, this is the only thing that needs to
+// change, independent of both the data and the dispatch loop below
+const procParamOrder = {
+  orderHeader: ['orderId', 'customer', 'orderDate'],
+  orderLines: ['orderId', 'lineNo', 'sku', 'qty'],
+};
 const statements = {
   orderHeader: 'insert into order_header values (:1, :2, :3)',
   orderLines: 'insert into order_lines values (:1, :2, :3, :4)',
@@ -207,14 +223,15 @@ const statements = {
 
 async function loadGroupedRowset(connection, text) {
   const entries = parseRowsetGroupedEntries(text);
-  for (const { name, data } of entries) {
+  for (const { name, header, data } of entries) {
     const sql = statements[name];
-    if (data.length > 1) {
+    const { data: rows } = projectRowsetColumns({ header, data }, procParamOrder[name]);
+    if (rows.length > 1) {
       // eslint-disable-next-line no-await-in-loop
-      await connection.executeMany(sql, data); // data is already array-of-arrays: bind by position
+      await connection.executeMany(sql, rows); // bind by position, in procParamOrder order
     } else {
       // eslint-disable-next-line no-await-in-loop
-      await connection.execute(sql, data[0]); // single row: bind by position, one array
+      await connection.execute(sql, rows[0]); // single row: bind by position, one array
     }
   }
   await connection.commit();
