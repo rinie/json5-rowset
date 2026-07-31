@@ -86,23 +86,39 @@ it.
    publicly, and the surface actually needed here (balanced brace/bracket
    + string/comment skipping) is small on purpose.
 
-5. **`stringifyRowset*` always single-quotes string values.** Known gap:
+5. **`projectRowsetColumns` reorders/subsets by name, never by position,
+   and throws on an unknown column rather than binding `undefined`.**
+   Came out of a discussion about calling Oracle stored procedures by
+   bind position when the procedure's parameter order doesn't match the
+   rowset's column order (and might reorder again in a future release).
+   The alternative discussed and explicitly rejected was named binds
+   everywhere (`connection.execute(sql, {id: 1, name: 'Acme'})`,
+   matched by bind-variable name instead of position) - Rinie wanted to
+   keep bind-by-position at the call site, and isolate proc-signature
+   drift into one small ordered mapping per procedure instead. Loud
+   failure on a stale mapping is deliberate, for the same reason: a
+   silently wrong positional bind is exactly the failure mode this
+   exists to prevent.
+
+6. **`stringifyRowset*` always single-quotes string values.** Known gap:
    Oracle `NUMBER` columns fetched as strings (`fetchAsString`, or values
    past JS's safe-integer range) will round-trip as quoted strings in
    json5-rowset text, not bare numbers. Documented in the README under
    "Known gaps", not yet fixed — ask before silently "fixing" this, the
    right behavior depends on how the caller wants big numbers handled.
 
-6. **Naming convention across the API:** every function is named
+7. **Naming convention across the API:** every function is named
    `<verb><Shape>`, where shape is `Rowset` (single table) or
    `RowsetTables`/`RowsetNested`/`RowsetGrouped` (multi-table: flat,
-   nested, or grouped/interleaved). The one exception is
+   nested, or grouped/interleaved). Two exceptions:
    `parseRowsetGroupedEntries` - same `Grouped` family, but returns the
    raw ordered entry list instead of the usual `{name: {header, data}}`
    table map, for callers where block order itself is the point (e.g.
-   driving Oracle inserts header-before-lines). `parseRowsetGrouped` is
-   just that, merged - keep it that way rather than duplicating the
-   parsing/validation logic between them. No
+   driving Oracle inserts header-before-lines) - `parseRowsetGrouped` is
+   just that, merged, so keep it that way rather than duplicating the
+   parsing/validation logic between them; and `projectRowsetColumns`,
+   which doesn't fit `<verb><Shape>` at all since it's `hd -> hd`, not a
+   parse/stringify/convert. No
    remaining references to the old `hd5`/`Hd5` working name should exist
    in code, comments, or docs — if you spot one, it's a miss from the
    rename, fix it.

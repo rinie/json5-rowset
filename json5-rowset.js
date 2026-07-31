@@ -72,6 +72,37 @@ function rowsetToObjects(hd) {
   });
 }
 
+// hd -> hd, with rows re-projected into a different column order/subset,
+// looked up by name via columnName() (so it works whether the source
+// header uses plain strings or Oracle metaData-shaped objects, and
+// `order` itself can be either too). This is the "DRY the header-to-proc
+// mapping" piece for calling a stored procedure by bind position whose
+// parameter order doesn't match your data's column order (and might
+// reorder again in a future release): keep one small ordered list of
+// column names per procedure, independent of both the source data and
+// the call-site code, instead of either reshaping the data itself or
+// switching every call to named binds.
+//   projectRowsetColumns(
+//     { header: ['orderId', 'customer', 'orderDate'], data: [[1, 'Acme', '2026-07-01']] },
+//     ['customer', 'orderId'],
+//   )
+//   -> { header: ['customer', 'orderId'], data: [['Acme', 1]] }
+// Throws if `order` names a column that isn't in the source header - a
+// stale mapping (e.g. after a proc's signature changes) should fail
+// loudly, not silently bind undefined into the wrong parameter.
+function projectRowsetColumns(hd, order) {
+  const indexOf = {};
+  hd.header.forEach((col, i) => { indexOf[columnName(col)] = i; });
+  order.forEach((col) => {
+    const name = columnName(col);
+    if (!(name in indexOf)) {
+      throw new Error(`projectRowsetColumns: column "${name}" not found in header`);
+    }
+  });
+  const data = hd.data.map((row) => order.map((col) => row[indexOf[columnName(col)]]));
+  return { header: order, data };
+}
+
 // node-oracledb execute() result with outFormat: oracledb.OUT_FORMAT_ARRAY
 // -> hd. Column order/values come straight from result.rows, so this is a
 // near-zero-cost wrap.
@@ -479,6 +510,7 @@ module.exports = {
   mapColumnCase,
   objectsToRowset,
   rowsetToObjects,
+  projectRowsetColumns,
   oracleArrayResultToRowset,
   oracleObjectResultToRowset,
   parseRowset,

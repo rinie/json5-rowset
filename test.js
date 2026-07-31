@@ -4,6 +4,7 @@ const assert = require('assert');
 const {
   objectsToRowset,
   rowsetToObjects,
+  projectRowsetColumns,
   oracleArrayResultToRowset,
   oracleObjectResultToRowset,
   parseRowset,
@@ -45,6 +46,25 @@ assert.deepStrictEqual(objects[0], {
 const hdBack = objectsToRowset(objects, hd.header);
 assert.deepStrictEqual(hdBack, hd);
 console.log('round trip objects -> hd OK');
+
+// 3b. projectRowsetColumns: reorder/subset a rowset's columns by name, for
+// bind-by-position calls whose parameter order doesn't match the data
+const projected = projectRowsetColumns(hd, ['culmen_length_mm', 'species']);
+assert.deepStrictEqual(projected, {
+  header: ['culmen_length_mm', 'species'],
+  data: [[39.1, 'Adelie'], [46.1, 'Gentoo']],
+});
+console.log('projectRowsetColumns OK:', projected.header);
+
+// projecting with a metaData-shaped header entry keeps that entry as-is in the output
+const projectedMeta = projectRowsetColumns(hd, [{ name: 'species', dbTypeName: 'VARCHAR2' }]);
+assert.deepStrictEqual(projectedMeta.header, [{ name: 'species', dbTypeName: 'VARCHAR2' }]);
+assert.deepStrictEqual(projectedMeta.data, [['Adelie'], ['Gentoo']]);
+console.log('projectRowsetColumns with metaData-shaped target header OK');
+
+// a stale mapping (column no longer in the header) fails loudly
+assert.throws(() => projectRowsetColumns(hd, ['no_such_column']), /not found in header/);
+console.log('projectRowsetColumns rejects unknown column OK');
 
 // 4. simulated node-oracledb OUT_FORMAT_ARRAY result, default opts (names, preserve case)
 const oracleArrayResult = {
@@ -266,6 +286,28 @@ assert.deepStrictEqual(execLog.map((c) => c[0]), ['execute', 'executeMany', 'exe
 assert.deepStrictEqual(execLog[0][2], [1, 'Acme', '2026-07-01']); // single-row entry: bind by position, one array
 assert.deepStrictEqual(execLog[1][2], [[1, 1, 'WIDGET-1', 3], [1, 2, 'WIDGET-2', 1]]); // multi-row: executeMany
 console.log('parseRowsetGroupedEntries -> execute/executeMany dispatch, in order, OK');
+
+// same dispatch, but the stored procs expect parameters in a different
+// order than the rowset's own header - one small mapping per proc, kept
+// separate from both the data and the dispatch loop, via projectRowsetColumns
+const procParamOrder = {
+  orderHeader: ['customer', 'orderId', 'orderDate'], // proc wants (customer, id, date), not header's (id, customer, date)
+  orderLines: ['sku', 'orderId', 'lineNo', 'qty'],
+};
+const mappedExecLog = [];
+const mappedConnection = {
+  execute: (sql, binds) => mappedExecLog.push(['execute', sql, binds]),
+  executeMany: (sql, rows) => mappedExecLog.push(['executeMany', sql, rows]),
+};
+parseRowsetGroupedEntries(groupedText).forEach(({ name, header, data }) => {
+  const sql = statements[name];
+  const { data: projectedData } = projectRowsetColumns({ header, data }, procParamOrder[name]);
+  if (projectedData.length > 1) mappedConnection.executeMany(sql, projectedData);
+  else mappedConnection.execute(sql, projectedData[0]);
+});
+assert.deepStrictEqual(mappedExecLog[0][2], ['Acme', 1, '2026-07-01']); // reordered to match procParamOrder.orderHeader
+assert.deepStrictEqual(mappedExecLog[1][2], [['WIDGET-1', 1, 1, 3], ['WIDGET-2', 1, 2, 1]]); // reordered to match procParamOrder.orderLines
+console.log('parseRowsetGroupedEntries + projectRowsetColumns -> proc-order dispatch OK');
 
 // 11b. stringifyRowsetGrouped without opts.groups: one full {header,data} entry per table
 const groupedBackText = stringifyRowsetGrouped(groupedTables);
