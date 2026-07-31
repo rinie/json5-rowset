@@ -114,6 +114,71 @@ Two interchangeable shapes for holding several tables in one file:
 - `parseRowsetNested(text)` → `{ penguins: {header, data}, weather: {header, data} }`
 - `stringifyRowsetNested(tables, opts?)` → the inverse
 
+### json5-rowset text (grouped / interleaved tables — "json-DRY")
+
+For master/detail data — an order header plus its lines, repeated once
+per order — repeating the column names for every order is pure noise.
+The grouped shape is the same per-table `{ header, data }` object
+`parseRowsetNested` uses, except a table name is allowed to repeat: a
+later occurrence only needs `data` (no `header`), and its rows are
+appended to that table. Declaring every table's header up front, each
+with its own single occurrence, works too — it's just the degenerate
+case where nothing repeats.
+
+```js
+{
+  orderHeader: {
+    header: ['orderId', 'customer', 'orderDate'],
+    data: [
+      [1, 'Acme', '2026-07-01'],
+    ],
+  },
+  orderLines: {
+    header: ['orderId', 'lineNo', 'sku', 'qty'],
+    data: [
+      [1, 1, 'WIDGET-1', 3],
+      [1, 2, 'WIDGET-2', 1],
+    ],
+  },
+  orderHeader: {
+    // no header redeclared
+    data: [
+      [2, 'Globex', '2026-07-15'],
+    ],
+  },
+  orderLines: {
+    data: [
+      [2, 1, 'GADGET-9', 5],
+    ],
+  },
+}
+```
+
+`header` is never guessed at by shape — it's always read from an
+explicit `header` key, so it can be plain column names or Oracle
+metaData-shaped objects, same as everywhere else in this module. Plain
+JS/JSON5 object semantics don't allow this text to just be handed to
+`JSON5.parse` as-is, though — a normal object literal treats a repeated
+key as last-one-wins and would silently drop the first `orderHeader`
+entry. `parseRowsetGrouped` scans the top level itself (handing each
+individual entry's value off to `JSON5.parse`) so repeated keys are
+appended instead of overwritten.
+
+- `parseRowsetGrouped(text)` → `{ orderHeader: {header, data}, orderLines: {header, data} }`
+  — same shape `parseRowsetTables`/`parseRowsetNested` return; data from
+  every entry sharing a name is concatenated, in document order.
+- `stringifyRowsetGrouped(tables, opts?)` → the inverse. Without
+  `opts.groups` it emits exactly one `name: { header, data }` entry per
+  table (its header plus all of its data) — always valid, just not
+  grouped, and the same output `stringifyRowsetNested` would produce. To
+  reproduce a real interleaving, pass `opts.groups` as an array of
+  per-group row counts:
+  `[{ orderHeader: 1, orderLines: 2 }, { orderHeader: 1, orderLines: 1 }]`
+  for two orders, the first with 2 lines and the second with 1 — rows are
+  consumed off each table's data in order, each as its own `name: {...}`
+  entry; the first entry for a given name also carries its `header`,
+  later ones don't.
+
 ### Plain JSON
 
 - `rowsetToJson(rowset)` — `JSON.stringify({header, data})`, smallest
@@ -121,8 +186,9 @@ Two interchangeable shapes for holding several tables in one file:
 - `objectsToJson(rowset)` — `JSON.stringify(rowsetToObjects(rowset))`,
   expanded array-of-objects.
 
-Nested/flat multi-table objects (from `parseRowsetTables`/`parseRowsetNested`)
-are already plain JS objects of `{header, data}` — `JSON.stringify(tables)`
+Nested/flat/grouped multi-table objects (from `parseRowsetTables`/
+`parseRowsetNested`/`parseRowsetGrouped`) are already plain JS objects of
+`{header, data}` — `JSON.stringify(tables)`
 works directly with no extra step, and running `rowsetToObjects` per
 table first gives the expanded array-of-objects form per table.
 
@@ -133,7 +199,7 @@ npm test
 ```
 
 `test.js` round-trips every function above (parse ↔ stringify, both
-Oracle result shapes converging on the same rowset, both multi-table
+Oracle result shapes converging on the same rowset, all three multi-table
 shapes, and the plain-JSON conversions) with `assert.deepStrictEqual`
 checks — read it as the spec if anything above is ambiguous.
 
@@ -159,5 +225,9 @@ doing before this goes in a shared repo.
   column names per-value to select against. If that's needed for
   `OUT_FORMAT_ARRAY` too, it'd have to select by index against
   `result.metaData` first.
+- `parseRowsetGrouped` hand-scans only the *top* level of the object
+  literal to preserve duplicate table-name keys (see above); a table
+  name repeating inside a nested structure isn't a thing this format
+  has a use for, so that's not supported, and there's no plan to.
 - No CLI wrapper yet (e.g. `json5-rowset convert file.js --to json`) —
   every entry point above is a function, called from your own script.

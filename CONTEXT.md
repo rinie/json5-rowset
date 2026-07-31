@@ -58,12 +58,33 @@ it.
    JSON5 over a shorter-but-indirected encoding. If someone asks for this
    later, it's a deliberate reversal of a decision, not an oversight.
 
-4. **Two multi-table shapes exist on purpose, not by indecision:** flat
-   prefixed keys (`csvHeader`/`csvData`) and nested blocks
-   (`penguins: {header, data}`). Both round-trip through the same
-   in-memory `{name: {header, data}}` object. Keep both — the nested
-   form was the one actually preferred once seen side-by-side, but the
-   flat form isn't dead code, don't remove it without asking.
+4. **Three multi-table shapes exist on purpose, not by indecision:** flat
+   prefixed keys (`csvHeader`/`csvData`), nested blocks
+   (`penguins: {header, data}`), and grouped/interleaved blocks — the
+   same `{name: {header, data}}` shape as nested, except a table name may
+   repeat, with later occurrences carrying only `data` (nicknamed
+   "json-DRY": don't repeat the header). All three round-trip through the
+   same in-memory `{name: {header, data}}` object. Keep all three —
+   nested is preferred for hand-authoring a small fixed set of tables,
+   grouped exists specifically for master/detail data (order header +
+   lines, repeated once per order) where a table's header should only
+   need to be written once, not for every repetition. Don't remove any
+   without asking.
+
+   Grouped's duplicate-key requirement is *why* it can't just be
+   `JSON5.parse(text)` like every other parse function here - plain
+   JS/JSON5 object literal semantics silently drop earlier duplicate
+   keys (last one wins), which would lose data, not just reformat it.
+   `parseRowsetGrouped` hand-scans the top level only
+   (`scanJson5TopLevelEntries`, not exported) to preserve every
+   occurrence in order, then still hands each individual entry's value
+   off to `JSON5.parse` - nested syntax (strings, comments, trailing
+   commas, arrays/objects) is fully JSON5, not reimplemented. If this
+   scanner ever needs to grow (e.g. supporting the same duplicate-key
+   trick at a nested level), keep it hand-rolled rather than pulling in a
+   JSON5 tokenizer dependency - the `json5` package doesn't expose one
+   publicly, and the surface actually needed here (balanced brace/bracket
+   + string/comment skipping) is small on purpose.
 
 5. **`stringifyRowset*` always single-quotes string values.** Known gap:
    Oracle `NUMBER` columns fetched as strings (`fetchAsString`, or values
@@ -74,7 +95,8 @@ it.
 
 6. **Naming convention across the API:** every function is named
    `<verb><Shape>`, where shape is `Rowset` (single table) or
-   `RowsetTables`/`RowsetNested` (multi-table, flat vs nested). No
+   `RowsetTables`/`RowsetNested`/`RowsetGrouped` (multi-table: flat,
+   nested, or grouped/interleaved). No
    remaining references to the old `hd5`/`Hd5` working name should exist
    in code, comments, or docs — if you spot one, it's a miss from the
    rename, fix it.
