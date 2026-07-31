@@ -118,29 +118,34 @@ Two interchangeable shapes for holding several tables in one file:
 
 For master/detail data — an order header plus its lines, repeated once
 per order — repeating the column names for every order is pure noise.
-The grouped shape is an ordered sequence of small `{name, header}` /
-`{name, data}` blocks: each table's header only has to appear once,
-anywhere before its first data block, then every later data block for
-that name just carries rows. Declaring every header up front (before any
-data) works too — it's just the case where every header happens to come
-first.
+The grouped shape is an ordered sequence of small blocks, each one a
+plain object keyed by table name (like the flat/nested shapes above),
+mapping to either that table's header or a chunk of its data. A table's
+header only has to appear once, anywhere before its first data entry;
+every later data entry for that name just carries rows. Declaring every
+header up front (in one shared block, or one each) works too — it's just
+the case where every header happens to come first. Since one block can
+carry entries for several tables at once, one block can double as one
+whole group — an order header row plus its lines, together:
 
 ```js
 {
   groups: [
-    { name: 'orderHeader', header: ['orderId', 'customer'] },
-    { name: 'orderLines', header: ['orderId', 'sku', 'qty'] },
-    { name: 'orderHeader', data: [[1, 'Acme']] },
-    { name: 'orderLines', data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
-    { name: 'orderHeader', data: [[2, 'Globex']] },       // no header redeclared
-    { name: 'orderLines', data: [[2, 'GADGET-9', 5]] },
+    { orderHeader: ['orderId', 'customer'], orderLines: ['orderId', 'sku', 'qty'] },
+    { orderHeader: [[1, 'Acme']], orderLines: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
+    { orderHeader: [[2, 'Globex']], orderLines: [[2, 'GADGET-9', 5]] }, // no header redeclared
   ],
 }
 ```
 
+Header vs data is told apart by shape, not by a key name: a header's
+entries are column names or metaData-shaped objects, never arrays; a
+data entry is always an array of row arrays. (An empty array is treated
+as an empty data entry — there's no such thing as a zero-column header.)
+
 - `parseRowsetGrouped(text, opts?)` → `{ orderHeader: {header, data}, orderLines: {header, data} }`
   — same shape `parseRowsetTables`/`parseRowsetNested` return; data from
-  every block sharing a name is concatenated, in document order.
+  every entry sharing a name is concatenated, in document order.
   `opts.groupsKey` renames the top-level `groups` property.
 - `stringifyRowsetGrouped(tables, opts?)` → the inverse. Without
   `opts.groups` it just emits each table's header once followed by all
@@ -148,8 +153,10 @@ first.
   interleaving, pass `opts.groups` as an array of per-group row counts:
   `[{ orderHeader: 1, orderLines: 2 }, { orderHeader: 1, orderLines: 1 }]`
   for two orders, the first with 2 lines and the second with 1 — rows are
-  consumed off each table's data in order. `opts.headersAtTop: true`
-  emits every header before any data instead of right before first use.
+  consumed off each table's data in order, and each group's counts are
+  emitted together as one block (one block = one order). `opts.headersAtTop: true`
+  emits every header together, up front, in one shared block, instead of
+  each right before its first data block.
 
 ### Plain JSON
 

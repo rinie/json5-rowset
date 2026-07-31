@@ -171,28 +171,32 @@ function parseRowsetNested(text) {
   return tables;
 }
 
-// One json5-rowset text: an ordered sequence of small per-table blocks -
-// { name, header } to declare/redeclare a table's header, or
-// { name, data } to append rows to it - interleaved in any order. A
+// One json5-rowset text: an ordered sequence of small blocks, each one a
+// plain object mapping table name -> header or data for that table. A
 // table's header only has to appear once, anywhere before its first data
-// block; every later data block for that name just carries rows and
+// entry; every later data entry for that name just carries rows and
 // reuses the header already seen. Declaring every table's header up
-// front (before any data) works exactly the same way - it's just the
+// front (in one shared block, or one each) works too - it's just the
 // case where every header happens to come first. This is the shape for
 // hand-written master/detail exports (order header + lines, repeated
-// once per order) where re-typing the column names for every order
-// would be pure noise.
+// once per order) where re-typing the column names for every order would
+// be pure noise - and since one block can carry entries for several
+// tables at once, one block can double as one whole group (order header
+// row + its lines together).
+//
+// Header vs data is told apart by shape, not by a key name: a header's
+// entries are column names or metaData-shaped objects, never arrays; a
+// data entry is always an array of row arrays. An empty array is treated
+// as an empty data entry (zero-column headers aren't a real thing).
+//
 //   { groups: [
-//       { name: 'orderHeader', header: ['orderId', 'customer'] },
-//       { name: 'orderLines', header: ['orderId', 'sku', 'qty'] },
-//       { name: 'orderHeader', data: [[1, 'Acme']] },
-//       { name: 'orderLines', data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
-//       { name: 'orderHeader', data: [[2, 'Globex']] },
-//       { name: 'orderLines', data: [[2, 'GADGET-9', 5]] },
+//       { orderHeader: ['orderId', 'customer'], orderLines: ['orderId', 'sku', 'qty'] },
+//       { orderHeader: [[1, 'Acme']], orderLines: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
+//       { orderHeader: [[2, 'Globex']], orderLines: [[2, 'GADGET-9', 5]] },
 //     ] }
 //   -> { orderHeader: {header, data}, orderLines: {header, data} }
 // Same { name: {header, data} } shape parseRowsetTables/parseRowsetNested
-// return - data from every block sharing a name is concatenated, in
+// return - data from every entry sharing a name is concatenated, in
 // document order.
 function parseRowsetGrouped(text, opts) {
   const { groupsKey = 'groups' } = opts || {};
@@ -203,21 +207,25 @@ function parseRowsetGrouped(text, opts) {
   }
   const tables = {};
   blocks.forEach((block, i) => {
-    const name = block && block.name;
-    const hasHeader = Object.prototype.hasOwnProperty.call(block || {}, 'header');
-    const hasData = Object.prototype.hasOwnProperty.call(block || {}, 'data');
-    if (!name || hasHeader === hasData) {
-      throw new Error(`Invalid json5-rowset grouped notation: block ${i} needs a "name" and exactly one of "header"/"data"`);
+    if (!block || typeof block !== 'object' || Array.isArray(block)) {
+      throw new Error(`Invalid json5-rowset grouped notation: block ${i} must be an object of { name: header-or-data }`);
     }
-    if (!tables[name]) tables[name] = { header: null, data: [] };
-    if (hasHeader) {
-      tables[name].header = block.header;
-    } else {
-      if (!tables[name].header) {
-        throw new Error(`Invalid json5-rowset grouped notation: "${name}" data block ${i} appears before its header`);
+    Object.keys(block).forEach((name) => {
+      const value = block[name];
+      if (!Array.isArray(value)) {
+        throw new Error(`Invalid json5-rowset grouped notation: "${name}" in block ${i} must be an array`);
       }
-      tables[name].data.push(...block.data);
-    }
+      if (!tables[name]) tables[name] = { header: null, data: [] };
+      const isHeader = value.length > 0 && !Array.isArray(value[0]);
+      if (isHeader) {
+        tables[name].header = value;
+      } else {
+        if (!tables[name].header) {
+          throw new Error(`Invalid json5-rowset grouped notation: "${name}" data in block ${i} appears before its header`);
+        }
+        tables[name].data.push(...value);
+      }
+    });
   });
   return tables;
 }
@@ -303,10 +311,12 @@ function stringifyRowsetNested(tables, opts) {
 //     master/detail groups) as an array of per-group row counts, e.g.
 //     [{ orderHeader: 1, orderLines: 2 }, { orderHeader: 1, orderLines: 1 }]
 //     for two orders, the first with 2 lines and the second with 1. Each
-//     table's rows are consumed off its data array in that order. A
-//     table's header block is emitted right before its first data block,
-//     unless opts.headersAtTop is set, in which case every header comes
-//     first instead.
+//     table's rows are consumed off its data array in that order, and
+//     each group's row counts are emitted together as one block (so one
+//     block = one order: header row + its lines). A table's header is
+//     emitted (in its own block) right before its first data block,
+//     unless opts.headersAtTop is set, in which case every header is
+//     emitted together, up front, in one shared block instead.
 //   Without opts.groups: no interleaving info to reconstruct, so every
 //     table's header is emitted, then all of its data as one block, in
 //     Object.keys(tables) order - always valid, just not grouped.
@@ -316,42 +326,50 @@ function stringifyRowsetGrouped(tables, opts) {
   } = opts || {};
   const idKey = (k) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k) ? k : toJsLiteral(k));
   const names = Object.keys(tables);
+  // Each block is a list of { name, header } / { name, data } entries -
+  // rendered as one object literal, so header and data for the same
+  // table must never land in the same block (duplicate key).
   const blocks = [];
   const headerEmitted = {};
-  const emitHeader = (name) => {
+  const emitHeaderBlock = (name) => {
     if (headerEmitted[name]) return;
-    blocks.push({ name, header: tables[name].header });
+    blocks.push([{ name, header: tables[name].header }]);
     headerEmitted[name] = true;
   };
 
-  if (headersAtTop) names.forEach(emitHeader);
+  if (headersAtTop) {
+    const entries = names.map((name) => {
+      headerEmitted[name] = true;
+      return { name, header: tables[name].header };
+    });
+    if (entries.length) blocks.push(entries);
+  }
 
   if (groups) {
     const cursor = {};
     names.forEach((name) => { cursor[name] = 0; });
     groups.forEach((group) => {
+      const entries = [];
       Object.keys(group).forEach((name) => {
-        if (!headersAtTop) emitHeader(name);
+        if (!headersAtTop) emitHeaderBlock(name);
         const count = group[name];
         const start = cursor[name];
-        blocks.push({ name, data: tables[name].data.slice(start, start + count) });
+        entries.push({ name, data: tables[name].data.slice(start, start + count) });
         cursor[name] = start + count;
       });
+      blocks.push(entries);
     });
   } else {
     names.forEach((name) => {
-      emitHeader(name);
-      blocks.push({ name, data: tables[name].data });
+      emitHeaderBlock(name);
+      blocks.push([{ name, data: tables[name].data }]);
     });
   }
 
-  const blockLines = blocks.map((b) => {
-    if (b.header) {
-      return `${indent}${indent}{ name: ${toJsLiteral(b.name)}, header: [${b.header.map(toJsLiteral).join(', ')}] },`;
-    }
-    const rows = b.data.map((row) => `[${row.map(toJsLiteral).join(', ')}]`).join(', ');
-    return `${indent}${indent}{ name: ${toJsLiteral(b.name)}, data: [${rows}] },`;
-  });
+  const renderEntry = (e) => (e.header
+    ? `${idKey(e.name)}: [${e.header.map(toJsLiteral).join(', ')}]`
+    : `${idKey(e.name)}: [${e.data.map((row) => `[${row.map(toJsLiteral).join(', ')}]`).join(', ')}]`);
+  const blockLines = blocks.map((entries) => `${indent}${indent}{ ${entries.map(renderEntry).join(', ')} },`);
   return ['{', `${indent}${idKey(groupsKey)}: [`, ...blockLines, `${indent}],`, '}'].join('\n');
 }
 

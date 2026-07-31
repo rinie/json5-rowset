@@ -61,13 +61,15 @@ it.
 4. **Three multi-table shapes exist on purpose, not by indecision:** flat
    prefixed keys (`csvHeader`/`csvData`), nested blocks
    (`penguins: {header, data}`), and grouped/interleaved blocks
-   (`groups: [{name, header}, {name, data}, ...]`). All three round-trip
-   through the same in-memory `{name: {header, data}}` object. Keep all
-   three — nested is preferred for hand-authoring a small fixed set of
-   tables, grouped exists specifically for master/detail data (order
-   header + lines, repeated once per order) where a table's header
-   should only need to be written once, anywhere before its first data
-   block, not for every repetition. Don't remove any without asking.
+   (`groups: [{name: header-or-data, ...}, ...]` — table name is the key,
+   header vs data told apart by shape, not a key name). All three
+   round-trip through the same in-memory `{name: {header, data}}` object.
+   Keep all three — nested is preferred for hand-authoring a small fixed
+   set of tables, grouped exists specifically for master/detail data
+   (order header + lines, repeated once per order) where a table's
+   header should only need to be written once, anywhere before its first
+   data entry, not for every repetition, and where one block can double
+   as one whole group. Don't remove any without asking.
 
 5. **`stringifyRowset*` always single-quotes string values.** Known gap:
    Oracle `NUMBER` columns fetched as strings (`fetchAsString`, or values

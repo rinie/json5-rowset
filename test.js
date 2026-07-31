@@ -173,16 +173,15 @@ console.log('stringifyRowsetNested:\n', nestedBackText);
 assert.deepStrictEqual(parseRowsetNested(nestedBackText), nestedTables);
 console.log('round trip nested json5-rowset text OK');
 
-// 11. grouped multi-table shape: interleaved master/detail blocks, header
-// declared once per table, later blocks for the same table are data-only
+// 11. grouped multi-table shape: interleaved master/detail blocks, table
+// name is the key, header declared once per table (here up front, in one
+// shared block), each later block is data-only and doubles as one whole
+// group (order header row + its lines together)
 const groupedText = `{
   groups: [
-    { name: 'orderHeader', header: ['orderId', 'customer'] },
-    { name: 'orderLines', header: ['orderId', 'sku', 'qty'] },
-    { name: 'orderHeader', data: [[1, 'Acme']] },
-    { name: 'orderLines', data: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
-    { name: 'orderHeader', data: [[2, 'Globex']] }, // no header redeclared
-    { name: 'orderLines', data: [[2, 'GADGET-9', 5]] },
+    { orderHeader: ['orderId', 'customer'], orderLines: ['orderId', 'sku', 'qty'] },
+    { orderHeader: [[1, 'Acme']], orderLines: [[1, 'WIDGET-1', 3], [1, 'WIDGET-2', 1]] },
+    { orderHeader: [[2, 'Globex']], orderLines: [[2, 'GADGET-9', 5]] }, // no header redeclared
   ],
 }`;
 const groupedTables = parseRowsetGrouped(groupedText);
@@ -197,9 +196,14 @@ assert.deepStrictEqual(groupedTables.orderLines, {
 });
 console.log('parseRowsetGrouped OK:', Object.keys(groupedTables));
 
-// a data block for a name with no header yet is rejected
-assert.throws(() => parseRowsetGrouped(`{ groups: [{ name: 'x', data: [[1]] }] }`), /before its header/);
+// a data entry for a name with no header yet is rejected
+assert.throws(() => parseRowsetGrouped(`{ groups: [{ x: [[1]] }] }`), /before its header/);
 console.log('parseRowsetGrouped rejects data before header OK');
+
+// an empty array is treated as an empty data entry, not a header
+const emptyDataTables = parseRowsetGrouped(`{ groups: [{ x: ['a'] }, { x: [] }] }`);
+assert.deepStrictEqual(emptyDataTables.x, { header: ['a'], data: [] });
+console.log('parseRowsetGrouped treats empty array as empty data OK');
 
 // 11b. stringifyRowsetGrouped without opts.groups: header once + one combined data block per table
 const groupedBackText = stringifyRowsetGrouped(groupedTables);
