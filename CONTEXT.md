@@ -96,7 +96,13 @@ it.
 6. **Naming convention across the API:** every function is named
    `<verb><Shape>`, where shape is `Rowset` (single table) or
    `RowsetTables`/`RowsetNested`/`RowsetGrouped` (multi-table: flat,
-   nested, or grouped/interleaved). No
+   nested, or grouped/interleaved). The one exception is
+   `parseRowsetGroupedEntries` - same `Grouped` family, but returns the
+   raw ordered entry list instead of the usual `{name: {header, data}}`
+   table map, for callers where block order itself is the point (e.g.
+   driving Oracle inserts header-before-lines). `parseRowsetGrouped` is
+   just that, merged - keep it that way rather than duplicating the
+   parsing/validation logic between them. No
    remaining references to the old `hd5`/`Hd5` working name should exist
    in code, comments, or docs — if you spot one, it's a miss from the
    rename, fix it.
