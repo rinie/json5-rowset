@@ -1,5 +1,7 @@
 # json5-rowset
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Compact `header`/`data` JSON5 rowset notation for tabular data, plus
 converters that bridge it to node-oracledb's two row formats and to
 plain JSON.
