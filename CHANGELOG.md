@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MIT `LICENSE`, GitHub repo description/topics, and branch protection
   (PR required, no force-push/deletion) on `main`.
 - Expanded `.gitignore` and an MIT license badge in the README.
+- `bindDefsFromRowset(rowset, {oracledb, overrides?})` — infers a
+  node-oracledb `executeMany()` bindDef (type, and `maxSize` for
+  strings) per header column by scanning every row, or uses a
+  metaData-/bindDef-shaped header entry as-is; never depends on
+  `oracledb` itself, takes the caller's own module reference to read its
+  type constants.
+- `toExecuteManyBinds(rowset, {mode})` / `toExecuteManyArgs(rowset, opts)`
+  — `rowset.data` (or `rowsetToObjects(rowset)` for named binds) as the
+  `binds` argument, and a one-call convenience returning
+  `{binds, options: {bindDefs, ...}}` ready to spread into
+  `connection.executeMany(sql, binds, options)`.
+- `inferBindType(values, oracledb)` / `isPlainObject(v)` /
+  `columnValues(rowset, colIndex)` — the smaller pieces the above is
+  built from, exported standalone.
 
 ## [0.1.0]
 

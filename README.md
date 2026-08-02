@@ -85,6 +85,56 @@ Both take:
   (`ALL_CAPS`) names, same heuristic as `duckdb-oracle`; a name that
   isn't all-caps must have been created quoted, so it's left alone.
 
+### node-oracledb `executeMany()` bridge
+
+`connection.executeMany(sql, binds, options)` needs `binds` (an array
+per row) and, for reliable behavior, explicit `bindDefs` (a type, and a
+`maxSize` for strings, per column) — normally hand-written and easy to
+get subtly wrong (e.g. sizing a string column off only the first row).
+A rowset already carries everything needed to build both:
+
+```js
+const oracledb = require('oracledb');
+const { toExecuteManyArgs } = require('json5-rowset');
+
+const { binds, options } = toExecuteManyArgs(insertRowset, { oracledb });
+await connection.executeMany(
+  'INSERT INTO penguins (species, culmen_length_mm, observed_at) VALUES (:1, :2, :3)',
+  binds,
+  options,
+);
+```
+
+This module never `require`s `oracledb` itself — pass your own
+`oracledb` module reference in `opts.oracledb` so it can read the type
+constants (`oracledb.STRING`, `.NUMBER`, `.DATE`, `.BIND_IN`, ...)
+without the package depending on the driver.
+
+- `bindDefsFromRowset(rowset, {oracledb, overrides?})` — one bindDef per
+  header column, in header order. Dispatch per column, using
+  `isPlainObject()`: a **plain-string** header entry (`'species'`) gets
+  its type/maxSize **inferred** from that column's actual data, scanning
+  every row (not just the first) so string `maxSize` is never
+  undersized. A header entry that's **already an object** — whether
+  hand-written as a bindDef (`{type, maxSize, dir}`) or produced by
+  `oracleArrayResultToRowset(result, {header: 'metadata'})` (Oracle's
+  own `{name, dbType, byteSize, ...}`) — is used as-is instead of
+  inferred. `opts.overrides` (keyed by column name) is merged in last,
+  for the cases inference gets wrong.
+- `inferBindType(values, oracledb)` — the inference used above, exported
+  standalone in case you want it against a plain array of values rather
+  than a rowset column.
+- `toExecuteManyBinds(rowset, {mode})` — `'array'` (default): `rowset.data`
+  as-is, zero copy, for positional binds (`:1, :2, ...`). `'object'`:
+  `rowsetToObjects(rowset)`, for named binds (`:species`, ...).
+- `toExecuteManyArgs(rowset, {oracledb, mode?, overrides?, options?})` —
+  the convenience above, `{binds, options: {bindDefs, ...options}}`
+  ready to spread into `executeMany`. Anything else you'd pass in
+  `options` (`autoCommit`, `batchErrors`, ...) merges straight through.
+- `isPlainObject(v)` / `columnValues(rowset, colIndex)` — the two small
+  helpers this is built from, exported in case you're writing a similar
+  bridge for something other than `executeMany`.
+
 ### json5-rowset text (single table)
 
 - `parseRowset(text, opts?)` — json5-rowset text → rowset.
@@ -298,3 +348,13 @@ doing before this goes in a shared repo.
   has a use for, so that's not supported, and there's no plan to.
 - No CLI wrapper yet (e.g. `json5-rowset convert file.js --to json`) —
   every entry point above is a function, called from your own script.
+- `inferBindType`'s boolean handling assumes `oracledb.DB_TYPE_BOOLEAN`
+  exists; on older node-oracledb/Oracle versions without native BOOLEAN
+  bind support it falls through to STRING for boolean columns, which is
+  probably not what you want — use `opts.overrides` for boolean columns
+  until this gets a real fallback (e.g. mapping to NUMBER 0/1).
+- `bindDefsFromRowset` always infers `dir: oracledb.BIND_IN` unless a
+  header/override object says otherwise — no support yet for OUT/IN OUT
+  binds inferred from a rowset (doesn't really make sense for an INSERT-
+  style rowset anyway, but worth knowing if you try to reuse this for a
+  procedure with OUT params).

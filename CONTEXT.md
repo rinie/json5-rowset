@@ -123,6 +123,24 @@ it.
    in code, comments, or docs — if you spot one, it's a miss from the
    rename, fix it.
 
+8. **The `executeMany` bridge never `require`s `oracledb`.** Same
+   reasoning as everything else in this file: it's a plain data-shape
+   bridge, not tied to the driver. `bindDefsFromRowset`/`toExecuteManyArgs`
+   take `opts.oracledb` (the caller's own required module) purely to read
+   its type constants. Don't add `oracledb` to `package.json`
+   dependencies to "simplify" this — that would break the module for
+   anyone using it outside a project that has `oracledb` installed (e.g.
+   the plain JSON / json5-rowset-text use cases that have nothing to do
+   with Oracle at all).
+
+9. **`bindDefsFromRowset`'s per-column dispatch is the same
+   `isPlainObject`/`columnName` pattern as the rest of the header
+   handling** — a plain-string header entry means "infer from data", an
+   object header entry (hand-written bindDef, or `{header: 'metadata'}`
+   output from the Oracle result converters) is used as-is. Keep this
+   consistent if either side changes; it's meant to be the same mental
+   model throughout the module, not a one-off for this one function.
+
 ## Conventions (Rinie's standing preferences — apply repo-wide)
 
 - Node.js/JavaScript, never Python.
