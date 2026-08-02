@@ -18,6 +18,12 @@ const {
   stringifyRowsetGrouped,
   rowsetToJson,
   objectsToJson,
+  isPlainObject,
+  columnValues,
+  inferBindType,
+  bindDefsFromRowset,
+  toExecuteManyBinds,
+  toExecuteManyArgs,
 } = require('./json5-rowset.js');
 
 // 1. json5-rowset source text, JSON5: comments + trailing commas + unquoted keys ok.
@@ -325,5 +331,91 @@ const groupedInterleavedText = stringifyRowsetGrouped(groupedTables, {
 console.log('stringifyRowsetGrouped (interleaved):\n', groupedInterleavedText);
 assert.deepStrictEqual(parseRowsetGrouped(groupedInterleavedText), groupedTables);
 console.log('round trip grouped (interleaved) json5-rowset text OK');
+
+// 12. node-oracledb executeMany() bridge. No real oracledb driver in this
+// sandbox, so mock just the pieces the module actually reads: the type
+// constants and BIND_IN. Real usage: opts.oracledb = require('oracledb').
+const mockOracledb = {
+  STRING: 'STRING',
+  NUMBER: 'NUMBER',
+  DATE: 'DATE',
+  BIND_IN: 'BIND_IN',
+};
+
+const insertRowset = {
+  header: ['species', 'culmen_length_mm', 'observed_at'],
+  data: [
+    ['Adelie', 39.1, new Date('2026-01-01')],
+    ['Gentoo', 46.15, new Date('2026-01-02')],
+    ['Chinstrap', 48.5, new Date('2026-01-03')],
+  ],
+};
+
+// 12a. type inference per column, across ALL rows (not just the first)
+const speciesValues = columnValues(insertRowset, 0);
+assert.deepStrictEqual(speciesValues, ['Adelie', 'Gentoo', 'Chinstrap']);
+const speciesBind = inferBindType(speciesValues, mockOracledb);
+assert.deepStrictEqual(speciesBind, { type: 'STRING', maxSize: 9 }); // 'Chinstrap'.length
+const lengthBind = inferBindType(columnValues(insertRowset, 1), mockOracledb);
+assert.deepStrictEqual(lengthBind, { type: 'NUMBER' });
+const dateBind = inferBindType(columnValues(insertRowset, 2), mockOracledb);
+assert.deepStrictEqual(dateBind, { type: 'DATE' });
+console.log('inferBindType OK:', { speciesBind, lengthBind, dateBind });
+
+// 12b. bindDefsFromRowset: all-string header -> everything inferred
+const bindDefs = bindDefsFromRowset(insertRowset, { oracledb: mockOracledb });
+assert.deepStrictEqual(bindDefs, [
+  { dir: 'BIND_IN', type: 'STRING', maxSize: 9 },
+  { dir: 'BIND_IN', type: 'NUMBER' },
+  { dir: 'BIND_IN', type: 'DATE' },
+]);
+console.log('bindDefsFromRowset (all inferred) OK:', bindDefs);
+
+// 12c. mixed header: a metadata-shaped entry short-circuits inference,
+// isPlainObject is the dispatch that decides which path a column takes
+assert.strictEqual(isPlainObject('species'), false);
+assert.strictEqual(isPlainObject(new Date()), false);
+assert.strictEqual(isPlainObject(['a']), false);
+assert.strictEqual(isPlainObject({ name: 'x' }), true);
+
+const mixedHeaderRowset = {
+  header: [
+    { name: 'species', dbType: 'ORACLE_VARCHAR2', byteSize: 32 }, // explicit, from metaData
+    'culmen_length_mm', // inferred
+    'observed_at', // inferred
+  ],
+  data: insertRowset.data,
+};
+const mixedBindDefs = bindDefsFromRowset(mixedHeaderRowset, { oracledb: mockOracledb });
+assert.deepStrictEqual(mixedBindDefs[0], { dir: 'BIND_IN', type: 'ORACLE_VARCHAR2', maxSize: 32 });
+assert.deepStrictEqual(mixedBindDefs[1], { dir: 'BIND_IN', type: 'NUMBER' });
+console.log('bindDefsFromRowset (mixed metadata/inferred) OK:', mixedBindDefs);
+
+// 12d. overrides win over both inferred and metadata-provided bindDefs
+const overriddenBindDefs = bindDefsFromRowset(insertRowset, {
+  oracledb: mockOracledb,
+  overrides: { species: { maxSize: 100 } },
+});
+assert.deepStrictEqual(overriddenBindDefs[0], { dir: 'BIND_IN', type: 'STRING', maxSize: 100 });
+console.log('bindDefsFromRowset overrides OK:', overriddenBindDefs[0]);
+
+// 12e. toExecuteManyBinds: 'array' mode is data as-is (zero copy), 'object' mode names them
+const arrayBinds = toExecuteManyBinds(insertRowset);
+assert.strictEqual(arrayBinds, insertRowset.data);
+const objectBinds = toExecuteManyBinds(insertRowset, { mode: 'object' });
+assert.deepStrictEqual(objectBinds[0], {
+  species: 'Adelie', culmen_length_mm: 39.1, observed_at: insertRowset.data[0][2],
+});
+console.log('toExecuteManyBinds array/object modes OK');
+
+// 12f. toExecuteManyArgs: one-call convenience matching connection.executeMany(sql, binds, options)
+const { binds, options } = toExecuteManyArgs(insertRowset, {
+  oracledb: mockOracledb,
+  options: { autoCommit: true },
+});
+assert.strictEqual(binds, insertRowset.data);
+assert.deepStrictEqual(options.bindDefs, bindDefs);
+assert.strictEqual(options.autoCommit, true);
+console.log('toExecuteManyArgs OK:', { binds: '<= insertRowset.data>', options });
 
 console.log('\nAll checks passed.');

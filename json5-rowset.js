@@ -505,6 +505,113 @@ function objectsToJson(hd) {
   return JSON.stringify(rowsetToObjects(hd));
 }
 
+// --- node-oracledb executeMany() bridge -----------------------------------
+//
+// A rowset is already shaped like what connection.executeMany(sql, binds)
+// wants for positional binds: binds = data (array of arrays), one array
+// per row, values in the same order as the bind variables. The DRY part
+// is bindDefs — executeMany needs an explicit type (and, for strings, a
+// maxSize) per bind column, and figuring that out by hand for every call
+// is exactly the kind of repetition this module exists to avoid.
+//
+// This module never `require('oracledb')` itself (same reasoning as the
+// rest of the file: it stays a plain data-shape bridge, not tied to the
+// driver). Callers pass their own `oracledb` module reference in opts so
+// the module can read its type constants (oracledb.STRING, .NUMBER,
+// .DATE, .BIND_IN, ...) without depending on the package.
+
+// True for a plain {..} object — false for null, arrays, and Dates,
+// which all need different handling than a "here's a bindDef" object.
+function isPlainObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date);
+}
+
+// All values in one column across every row (data is row-major, this
+// transposes a single column out of it).
+function columnValues(rowset, colIndex) {
+  return rowset.data.map((row) => row[colIndex]);
+}
+
+// Given a column's values, guess an executeMany bindDef {type, maxSize?}.
+// Skips null/undefined when sampling — a column that's ever a Date/number
+// drives the type; anything else (including all-null columns) falls back
+// to STRING. maxSize is the max UTF-8 byte length seen, so it's correct
+// even if the first few rows happen to have short values.
+function inferBindType(values, oracledb) {
+  const sample = values.find((v) => v !== null && v !== undefined);
+  if (sample instanceof Date) return { type: oracledb.DATE };
+  if (typeof sample === 'number') return { type: oracledb.NUMBER };
+  if (typeof sample === 'boolean' && oracledb.DB_TYPE_BOOLEAN) {
+    return { type: oracledb.DB_TYPE_BOOLEAN };
+  }
+  const maxSize = values.reduce((max, v) => {
+    if (v === null || v === undefined) return max;
+    return Math.max(max, Buffer.byteLength(String(v), 'utf8'));
+  }, 1);
+  return { type: oracledb.STRING, maxSize };
+}
+
+// rowset -> array of executeMany bindDefs, one per header column, in
+// header order.
+//   opts.oracledb (required): the oracledb module, for type constants.
+//   opts.overrides: { [columnName]: partial bindDef } merged in last, so
+//   you can force a type inference got wrong without hand-building the
+//   whole bindDefs array.
+// Dispatch per column (the isArray/isObject "macro" bit): if a header
+// entry is a plain object, it's already bindDef-shaped (or metaData-
+// shaped from oracleArrayResultToRowset/oracleObjectResultToRowset with
+// {header: 'metadata'}) and is used directly; a plain string header
+// entry means "infer this one from the data".
+function bindDefsFromRowset(rowset, opts) {
+  const { oracledb, overrides = {} } = opts || {};
+  if (!oracledb) throw new Error('bindDefsFromRowset requires opts.oracledb');
+  const dir = oracledb.BIND_IN;
+
+  return rowset.header.map((col, i) => {
+    const name = columnName(col);
+    let bindDef;
+    if (isPlainObject(col)) {
+      // Metadata/bindDef-shaped header entry: prefer an explicit bindDef
+      // type/maxSize if present, else fall back to Oracle metaData's
+      // dbType/byteSize (what oracleArrayResultToRowset with
+      // {header: 'metadata'} produces).
+      bindDef = {
+        type: col.type || col.dbType || oracledb.STRING,
+        ...(col.maxSize || col.byteSize ? { maxSize: col.maxSize || col.byteSize } : {}),
+      };
+    } else {
+      bindDef = inferBindType(columnValues(rowset, i), oracledb);
+    }
+    return { dir, ...bindDef, ...(overrides[name] || {}) };
+  });
+}
+
+// rowset -> the `binds` argument for connection.executeMany(sql, binds).
+//   opts.mode: 'array' (default) — data as-is (positional binds, zero
+//              copy, needs bind variables in header order: :1, :2, ... or
+//              named placeholders bound positionally)
+//              'object' — rowsetToObjects(rowset) (named binds, :species
+//              etc. matched by column name instead of position)
+function toExecuteManyBinds(rowset, opts) {
+  const { mode = 'array' } = opts || {};
+  return mode === 'object' ? rowsetToObjects(rowset) : rowset.data;
+}
+
+// One-call convenience: rowset -> { binds, options } ready to spread into
+// connection.executeMany(sql, binds, options).
+//   const { binds, options } = toExecuteManyArgs(rowset, { oracledb });
+//   await connection.executeMany(sql, binds, options);
+// opts is passed through to both toExecuteManyBinds (mode) and
+// bindDefsFromRowset (oracledb, overrides); anything else in opts.options
+// (autoCommit, batchErrors, ...) is merged into the returned options as-is.
+function toExecuteManyArgs(rowset, opts) {
+  const { mode, oracledb, overrides, options = {} } = opts || {};
+  return {
+    binds: toExecuteManyBinds(rowset, { mode }),
+    options: { bindDefs: bindDefsFromRowset(rowset, { oracledb, overrides }), ...options },
+  };
+}
+
 module.exports = {
   columnName,
   mapColumnCase,
@@ -524,4 +631,10 @@ module.exports = {
   stringifyRowsetGrouped,
   rowsetToJson,
   objectsToJson,
+  isPlainObject,
+  columnValues,
+  inferBindType,
+  bindDefsFromRowset,
+  toExecuteManyBinds,
+  toExecuteManyArgs,
 };
